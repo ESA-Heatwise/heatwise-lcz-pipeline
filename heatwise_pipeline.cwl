@@ -6,8 +6,8 @@ $namespaces:
 s:softwareVersion: 0.1.1
 s:version: 0.1.1
 
-schemas:
-  - http://schema.org/version/9.0/schemaorg-current-http.rdf
+$schemas:
+  - https://schema.org/version/latest/schemaorg-current-https.rdf
 
 class: Workflow
 id: main
