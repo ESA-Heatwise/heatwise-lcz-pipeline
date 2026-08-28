@@ -1,0 +1,13 @@
+{
+  "type": "Catalog",
+  "stac_version": "1.0.0",
+  "id": "heatwise-lcz-pipeline-preprocessing-input",
+  "description": "Berlin staged EO input products for the HEATWISE LCZ preprocessing stage.",
+  "links": [
+    {
+      "rel": "item",
+      "href": "Berlin_item.json",
+      "type": "application/geo+json"
+    }
+  ]
+}
