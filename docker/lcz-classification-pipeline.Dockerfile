@@ -1,15 +1,19 @@
-# Thin derived image (heatwise-lcz-pipeline only, does NOT modify
-# heatwise-lcz-classification) -- see patch-extraction-pipeline.Dockerfile's
-# comment for why the glue script is baked in and why ENTRYPOINT is cleared
-# (ENTRYPOINT vs CMD command-replacement semantics).
+# Thin pipeline adapter image for heatwise-lcz-classification prediction.
 #
-# Build from the repo root:
-# docker build -f docker/lcz-classification-pipeline.Dockerfile -t ghcr.io/heatwise-lcz/heatwise-lcz-classification-pipeline:0.1.1 .
+# The scientific processor is provided by the EOAP-compliant upstream image.
+# This derived image only adds the pipeline glue script that adapts the
+# preprocessing STAC output, selects the requested trained checkpoint, and
+# invokes the prediction interface.
 #
-# Before the base image is published, build/tag it locally with this same
-# release-shaped name:
-# docker build -t ghcr.io/heatwise-lcz/heatwise-lcz-classification:0.1.1 ../heatwise-lcz-classification
-FROM ghcr.io/heatwise-lcz/heatwise-lcz-classification:0.1.1
+# The upstream EOAP image uses CMD rather than ENTRYPOINT, so CWL can invoke
+# /app/run_predict.py explicitly without clearing an ENTRYPOINT.
+#
+# This eoap-compliance base tag is temporary for integration testing. Once
+# the upstream EOAP changes are merged and a stable image is published, this
+# reference can be switched back to the corresponding versioned release tag.
+
+FROM ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance
+
 COPY scripts/run_predict.py /app/run_predict.py
-ENTRYPOINT []
+
 CMD ["python", "/app/run_predict.py", "--help"]
