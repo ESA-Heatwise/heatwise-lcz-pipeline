@@ -80,8 +80,8 @@ jobs:
       - name: Pull upstream processor images
         run: |
           docker pull ghcr.io/heatwise-lcz/heatwise-hsi-lst-prep:0.1.1
-          docker pull ghcr.io/heatwise-lcz/heatwise-patch-extraction:0.1.1
-          docker pull ghcr.io/heatwise-lcz/heatwise-lcz-classification:0.1.1
+          docker pull ghcr.io/esa-heatwise/heatwise-patch-extraction:eoap-compliance
+          docker pull ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance
 
       - name: Verify upstream EOAP image interfaces
         run: |
@@ -94,29 +94,25 @@ jobs:
 
           echo "=== Patch extraction ==="
           docker run --rm \
-            --entrypoint python \
-            ghcr.io/heatwise-lcz/heatwise-patch-extraction:0.1.1 \
-            /app/processor.py --help \
+            ghcr.io/esa-heatwise/heatwise-patch-extraction:eoap-compliance \
+            python /app/processor.py --help \
             | grep -- "--input-catalog"
 
           echo "=== LCZ training ==="
           docker run --rm \
-            --entrypoint python \
-            ghcr.io/heatwise-lcz/heatwise-lcz-classification:0.1.1 \
-            /app/processor.py train --help \
+            ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance \
+            python /app/processor.py train --help \
             | grep -- "--input-catalog"
 
           echo "=== LCZ prediction ==="
           docker run --rm \
-            --entrypoint python \
-            ghcr.io/heatwise-lcz/heatwise-lcz-classification:0.1.1 \
-            /app/processor.py predict --help \
+            ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance \
+            python /app/processor.py predict --help \
             | grep -- "--input-catalog"
 
           docker run --rm \
-            --entrypoint python \
-            ghcr.io/heatwise-lcz/heatwise-lcz-classification:0.1.1 \
-            /app/processor.py predict --help \
+            ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance \
+            python /app/processor.py predict --help \
             | grep -- "--weights"
 
       - name: Build patch extraction pipeline image
