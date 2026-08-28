@@ -1,220 +1,402 @@
 # heatwise-lcz-pipeline
 
-Self-contained EOAP workflow package chaining the three HEATWISE processors
-into a single CWL `Workflow`, end to end:
+Self-contained EOAP-oriented CWL workflow package chaining the three HEATWISE
+LCZ processors into a single end-to-end workflow:
 
 ```text
-heatwise-hsi-lst-prep -> heatwise-patch-extraction -> heatwise-lcz-classification train -> heatwise-lcz-classification predict
+heatwise-hsi-lst-prep
+        |
+        v
+heatwise-patch-extraction
+        |
+        v
+heatwise-lcz-classification train
+        |
+        v
+heatwise-lcz-classification predict
 ```
 
-The final step also writes a STAC catalog and item describing the final LCZ
-map and training metrics.
+EO products are exchanged between stages through STAC catalogs and staged CWL
+`Directory` inputs/outputs.
 
-## Relationship To Processor Repos
+The pipeline produces intermediate EO products for preprocessing, patch
+extraction, and training, followed by the final LCZ classification product and
+its STAC metadata.
 
-The three processors remain independent repositories with their own code,
-Dockerfiles and CWL files; they are not modified by anything here. This repo
-consumes them only through Docker images.
+## Relationship to the Processor Repositories
 
-- `prep` and `train` run vendored copies of the upstream CWL files:
-  [tools/hsi_lst_prep.cwl](tools/hsi_lst_prep.cwl) and
-  [tools/lcz_train.cwl](tools/lcz_train.cwl). The processor code lives in
-  the images, so the CWL package has no `../sibling-repo/` runtime
-  dependency.
-- `extract_patches` and `predict` run merged glue+run CommandLineTools. Their
-  glue scripts are baked into thin derived images built from [docker/](docker/).
+The scientific processors remain in three independent repositories:
 
-Docker references are written in release shape and pinned to versioned tags
-under `ghcr.io/heatwise-lcz/...`. Before the images are published, build and tag
-them locally with the same names. After publication, the same CWL files can
-run elsewhere by pulling those exact tags.
+- `heatwise-hsi-lst-prep`
+- `heatwise-patch-extraction`
+- `heatwise-lcz-classification`
 
-## Why Merged Glue Steps Exist
+This repository contains only the orchestration layer required to connect them
+into the complete LCZ workflow.
 
-`heatwise-patch-extraction` and `heatwise-lcz-classification predict` take a
-`config.yaml` whose contents reference staged file paths. Plain CWL step
-connections pass files and directories, but they do not rewrite YAML content.
+The preprocessing and training stages use vendored CWL
+`CommandLineTool` definitions:
 
-The first design rendered a config in one CWL step and consumed it in the
-next. That failed because each CWL step has its own container staging paths.
-The current tools render the config and run the processor inside the same
-container invocation:
+- [tools/hsi_lst_prep.cwl](tools/hsi_lst_prep.cwl)
+- [tools/lcz_train.cwl](tools/lcz_train.cwl)
+
+The patch-extraction and prediction stages require small pipeline adapters:
 
 - [tools/extract_patches_pipeline.cwl](tools/extract_patches_pipeline.cwl)
-  calls `/app/run_patch_extraction.py`.
-- [tools/predict_pipeline.cwl](tools/predict_pipeline.cwl) calls
-  `/app/run_predict.py` and writes the final STAC output.
+- [tools/predict_pipeline.cwl](tools/predict_pipeline.cwl)
 
-The derived images are needed because the upstream images use
-`ENTRYPOINT ["python", "/app/processor.py"]`; Docker appends arguments to a
-fixed entrypoint instead of replacing it. The derived images clear
-`ENTRYPOINT`, add the glue script, and otherwise layer on top of the verified
-processor image.
+Their Python glue code is stored in:
+
+- [scripts/run_patch_extraction.py](scripts/run_patch_extraction.py)
+- [scripts/run_predict.py](scripts/run_predict.py)
+
+and baked into thin derived Docker images defined under [docker/](docker/).
+
+No scientific processing implementation is duplicated in this repository.
+
+## EOAP Data Flow
+
+The pipeline uses staged STAC directories instead of configuration files
+containing hard-coded raster paths.
+
+The initial preprocessing input is a CWL `Directory` containing:
+
+```text
+catalog.json
+STAC Item(s)
+referenced EO assets
+```
+
+All asset hrefs in the sample STAC package are relative to the staged
+directory.
+
+For the Berlin example this directory is:
+
+```text
+data/Berlin_prep/
+|-- catalog.json
+|-- Berlin_item.json
+|-- Berlin_CHIME.tif
+|-- Berlin_LSTM.tif
+`-- Berlin_S2.tif
+```
+
+The STAC Item exposes the input assets using the keys expected by the
+preprocessing processor:
+
+```text
+hyperspectral_image
+sentinel2
+lst_source
+```
+
+The preprocessing stage generates a new STAC product containing the processed
+hyperspectral and optional LST assets.
+
+## Why Pipeline Adapters Are Needed
+
+The output interface of the preprocessing processor is not identical to the
+input interfaces required by patch extraction and LCZ prediction.
+
+In particular, preprocessing exposes processed assets such as:
+
+```text
+hsi_bs
+lst
+```
+
+while the downstream processors consume assets named:
+
+```text
+hsi
+sentinel2
+lst
+```
+
+The preprocessing output also does not propagate the original Sentinel-2
+asset.
+
+Therefore the pipeline uses lightweight adapters to connect the stages without
+changing the scientific processors.
+
+### Patch-extraction adapter
+
+[scripts/run_patch_extraction.py](scripts/run_patch_extraction.py):
+
+1. Reads the preprocessing output STAC catalog.
+2. Resolves the processed `hsi_bs` asset and optional `lst` asset.
+3. Combines them with the original staged Sentinel-2 image.
+4. Creates a temporary STAC adapter catalog exposing `hsi`, `sentinel2`, and
+   optional `lst`.
+5. Injects the dynamically staged labels path into the patch configuration.
+6. Runs the EOAP patch-extraction processor using `--input-catalog`.
+
+The patch processor generates `patches.h5` and its output STAC catalog.
+
+### Prediction adapter
+
+[scripts/run_predict.py](scripts/run_predict.py):
+
+1. Reads the preprocessing output STAC catalog.
+2. Resolves the processed `hsi_bs` asset and optional `lst` asset.
+3. Combines them with the original staged Sentinel-2 image.
+4. Creates a temporary STAC adapter catalog for prediction.
+5. Selects the requested trained checkpoint from the training output.
+6. Runs the EOAP prediction interface using `--input-catalog` and `--weights`.
+
+The classification processor writes the final LCZ map and its STAC metadata.
+
+The temporary adapter catalogs exist only inside their corresponding pipeline
+steps and are not final workflow products.
+
+## Workflow
+
+```mermaid
+flowchart LR
+    A["Staged input STAC"] --> B["prep: HSI/LST preprocessing"]
+
+    B --> C["extract_patches: STAC adapter + patch extraction"]
+    S["Original Sentinel-2"] --> C
+    L["Labels"] --> C
+
+    C --> D["train: LCZ classifier"]
+
+    B --> E["predict: STAC adapter + prediction"]
+    S --> E
+    D --> E
+
+    E --> F["Final LCZ EO product"]
+```
+
+The top-level workflow is:
+
+[heatwise_pipeline.cwl](heatwise_pipeline.cwl)
+
+and exposes four stage outputs:
+
+| Workflow output | Content |
+|---|---|
+| `prep_output` | Processed HSI/LST products and preprocessing STAC |
+| `patch_output` | Patch HDF5 product and patch-extraction STAC |
+| `train_output` | Model checkpoints, metrics, summary files and training STAC |
+| `output` | Final LCZ classification product and prediction STAC |
 
 ## Repository Structure
 
 ```text
 heatwise-lcz-pipeline/
 |-- heatwise_pipeline.cwl
+|
 |-- tools/
 |   |-- hsi_lst_prep.cwl
 |   |-- lcz_train.cwl
 |   |-- extract_patches_pipeline.cwl
-|   |-- predict_pipeline.cwl
+|   `-- predict_pipeline.cwl
+|
 |-- scripts/
 |   |-- run_patch_extraction.py
-|   |-- run_predict.py
+|   `-- run_predict.py
+|
 |-- docker/
 |   |-- patch-extraction-pipeline.Dockerfile
-|   |-- lcz-classification-pipeline.Dockerfile
+|   `-- lcz-classification-pipeline.Dockerfile
+|
 |-- examples/
 |   |-- job.yaml
-|   |-- run_local.sh
 |   |-- run_all_config_docker.yaml
-|   |-- prep_catalog_docker.json
 |   |-- patch_config_template.yaml
 |   |-- predict_config_template.yaml
-|   |-- train_config_sample.yaml
+|   `-- train_config_sample.yaml
+|
 |-- data/
-|   |-- Berlin_S2.tif
-|   |-- Berlin_labels/
+|   |-- Berlin_prep/
+|   |   |-- catalog.json
+|   |   |-- Berlin_item.json
+|   |   |-- Berlin_CHIME.tif
+|   |   |-- Berlin_LSTM.tif
+|   |   `-- Berlin_S2.tif
+|   |
+|   `-- Berlin_labels/
+|
+|-- .github/
+|   `-- workflows/
+|       `-- validate-pipeline.yml
+|
 |-- README.md
 |-- LICENSE
-|-- requirements.txt
+`-- requirements.txt
 ```
 
-## Workflow
+## Example Job
 
-```mermaid
-flowchart LR
-    A["prep: HSI/LST preprocessing"] --> B["extract_patches: render config + run"]
-    B --> C["train: LCZ classifier"]
-    C --> D["predict: render config + predict + write STAC"]
-    A --> D
-    D --> E["lcz_map.tif"]
-    D --> F["catalog.json"]
+[examples/job.yaml](examples/job.yaml) provides the complete job order used by
+the end-to-end validation.
+
+The preprocessing EO products are staged through:
+
+```yaml
+prep_input_catalog:
+  class: Directory
+  path: ../data/Berlin_prep
 ```
 
-## Build
+The original Sentinel-2 raster is also supplied explicitly to the downstream
+adapters:
 
-Until the images are published to a registry, build all images locally using
-the same versioned names that the CWL files reference. This keeps local tests
-aligned with the eventual delivery tags:
+```yaml
+sentinel2:
+  class: File
+  path: ../data/Berlin_prep/Berlin_S2.tif
+```
+
+This is necessary because Sentinel-2 is an input to preprocessing but is not
+part of the preprocessing output STAC product.
+
+The labels are staged independently as a CWL `Directory`.
+
+## Container Images
+
+The pipeline currently uses the following preprocessing image:
+
+```text
+ghcr.io/heatwise-lcz/heatwise-hsi-lst-prep:0.1.1
+```
+
+During EOAP integration testing, the patch-extraction and classification
+processors use images built directly from their `eoap-compliance` branches:
+
+```text
+ghcr.io/esa-heatwise/heatwise-patch-extraction:eoap-compliance
+ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance
+```
+
+These tags are temporary integration-test references.
+
+Once the corresponding upstream EOAP changes are merged and versioned images
+are published, the temporary `eoap-compliance` references should be replaced
+with the final release tags.
+
+### Derived pipeline images
+
+The two adapters are packaged as thin derived images:
 
 ```bash
-# From the three processor repos
-docker build -t ghcr.io/heatwise-lcz/heatwise-hsi-lst-prep:0.1.1 ../heatwise-hsi-lst-prep
-docker build -t ghcr.io/heatwise-lcz/heatwise-patch-extraction:0.1.1 ../heatwise-patch-extraction
-docker build -t ghcr.io/heatwise-lcz/heatwise-lcz-classification:0.1.1 ../heatwise-lcz-classification
+docker build \
+  -f docker/patch-extraction-pipeline.Dockerfile \
+  -t ghcr.io/heatwise-lcz/heatwise-patch-extraction-pipeline:0.1.1 \
+  .
 
-# From this repo root
-docker build -f docker/patch-extraction-pipeline.Dockerfile -t ghcr.io/heatwise-lcz/heatwise-patch-extraction-pipeline:0.1.1 .
-docker build -f docker/lcz-classification-pipeline.Dockerfile -t ghcr.io/heatwise-lcz/heatwise-lcz-classification-pipeline:0.1.1 .
+docker build \
+  -f docker/lcz-classification-pipeline.Dockerfile \
+  -t ghcr.io/heatwise-lcz/heatwise-lcz-classification-pipeline:0.1.1 \
+  .
 ```
 
-Rebuild the derived images whenever [scripts/run_patch_extraction.py](scripts/run_patch_extraction.py)
-or [scripts/run_predict.py](scripts/run_predict.py) changes; the containers
-run the baked-in copies.
+These images contain only the pipeline glue scripts on top of their respective
+scientific processor images.
 
-For registry delivery, push the same five tags after they have been tested
-locally. No CWL file changes should be needed after the push.
+The upstream EOAP processor images use `CMD`, allowing the CWL tools to invoke
+the adapter scripts explicitly without modifying or clearing an upstream
+`ENTRYPOINT`.
 
-## Run CWL
+## Run the Full CWL Workflow
+
+Prerequisites are Docker, `cwltool`, and access to the required GHCR packages.
+
+From the repository root:
 
 ```bash
-cwltool --outdir cwl_output heatwise_pipeline.cwl examples/job.yaml
+mkdir -p cwl-output
+
+cwltool \
+  --outdir cwl-output \
+  heatwise_pipeline.cwl \
+  examples/job.yaml
 ```
 
-[examples/job.yaml](examples/job.yaml) is self-contained: sample data are
-under [data/](data/), and configs/templates are under [examples/](examples/).
+This is the same execution path exercised by the GitHub Actions integration
+test.
 
-### Where each piece of sample data lives (and why)
+## Validation
 
-The workflow moves data through three different channels, which is why
-`data/` contains only Sentinel-2 and the labels:
+The workflow includes automated validation in:
 
-- **Raw HSI + LSTM: baked into the prep image** (`/app/examples/stac_input/`
-  in `ghcr.io/heatwise-lcz/heatwise-hsi-lst-prep`, shipped in that repo's
-  `examples/stac_input/`). The prep step reads its inputs via a STAC
-  catalog, and `cwltool` only stages the one `catalog.json` File given in
-  the job — not the item/asset files it references (confirmed by an actual
-  run). So the catalog's hrefs must point at absolute in-image paths, and
-  the rasters must already be in the image. On a real platform, the staged
-  input catalog replaces the `prep_catalog` input and this constraint
-  disappears.
-- **Processed HSI (`hsi_bs`) + LST (`lst_final`): produced at runtime** by
-  the prep step and passed to `extract_patches`/`predict` through the CWL
-  step connection (`prep_dir`); they are deliberately not shipped —
-  producing them live is the point of the pipeline.
-- **Sentinel-2 + labels: staged from `data/` via the job file.** These are
-  ordinary CWL `File`/`Directory` inputs consumed directly by the
-  `extract_patches` and `predict` glue steps (`--sentinel2`,
-  `--labels-dir`), so they stage normally. The prep step's sharpening uses
-  the in-image copy of the same S2 scene instead, for the catalog reason
-  above.
-
-Workflow outputs copied to `--outdir`:
-
-| Output | Content |
-|---|---|
-| `lcz_map` | Final LCZ classification GeoTIFF |
-| `stac_catalog` | Root STAC catalog for final products |
-| `predict_output/` | LCZ map, metric CSV copies, STAC catalog and item |
-| `prep_output/` | HSI/LST prep outputs and prep STAC |
-| `patch_h5` | Extracted training patches |
-| `train_output/` | Checkpoints, confusion matrices and summary.csv |
-
-## Run Locally Without Docker/CWL
-
-This is the local Python test level of the EOAP guideline. Only `pyyaml` is
-needed for the glue scripts (`pip install -r requirements.txt`); the three
-processor repos must be checked out and have their own environments installed.
-Adjust the `../heatwise-*` paths if your checkout layout differs.
-
-All four steps are wrapped in [examples/run_local.sh](examples/run_local.sh)
-(`bash examples/run_local.sh`; override repo locations via
-`PREP_REPO`/`PATCH_REPO`/`LCZ_REPO`). The individual commands:
-
-```bash
-python ../heatwise-hsi-lst-prep/processor.py run-all \
-    --config ../heatwise-hsi-lst-prep/examples/run_all_config.yaml \
-    --input-catalog ../heatwise-hsi-lst-prep/examples/stac_input/catalog.json \
-    --output-dir output/prep
-
-python scripts/run_patch_extraction.py \
-    --template examples/patch_config_template.yaml \
-    --prep-dir output/prep \
-    --sentinel2 data/Berlin_S2.tif \
-    --labels-dir data/Berlin_labels \
-    --labels-basename Berlin_labels \
-    --output-h5 output/patches.h5 \
-    --rendered-config output/patch_config_rendered.yaml \
-    --processor ../heatwise-patch-extraction/processor.py
-
-python ../heatwise-lcz-classification/processor.py train \
-    --h5-dir output/patches.h5 \
-    --config examples/train_config_sample.yaml \
-    --output-dir output/train
-
-python scripts/run_predict.py \
-    --template examples/predict_config_template.yaml \
-    --prep-dir output/prep \
-    --sentinel2 data/Berlin_S2.tif \
-    --train-dir output/train \
-    --experiment-name HSI-BS \
-    --output-dir output/predict \
-    --rendered-config output/predict_config_rendered.yaml \
-    --processor ../heatwise-lcz-classification/processor.py
+```text
+.github/workflows/validate-pipeline.yml
 ```
 
-## Status
+The validation performs:
 
-- The full Python chain has been verified locally with real intermediate
-  outputs and produced a valid LCZ map.
-- The restructured CWL workflow has passed an end-to-end `cwltool` run on
-  2026-07-09 with `Final process status is success`.
-- Native Windows `cwltool` may need local guards for Unix-only APIs in recent
-  versions. WSL2 is the recommended route for repeatable CWL execution.
-- Still pending for full EOAP delivery: test on an EOAP/APEx-compatible
-  platform. The five Docker images are published on GHCR under
-  `ghcr.io/heatwise-lcz/` with pinned version tags.
+1. Python syntax checks for the pipeline adapter scripts.
+2. Validation of the staged preprocessing input STAC.
+3. Validation of the top-level CWL workflow.
+4. Validation of all vendored and adapter CWL tools.
+5. Authentication and retrieval of the required GHCR processor images.
+6. Verification of the EOAP command-line interfaces.
+7. Construction of the two derived adapter images.
+8. Execution of the complete CWL pipeline.
+9. Validation of all generated STAC catalogs.
+10. Verification of the required pipeline products.
+
+The product checks require at least:
+
+```text
+patches.h5
+best_model_*.pth
+summary.csv
+lcz_map.tif
+```
+
+## Current Validation Status
+
+The complete LCZ workflow was successfully executed end to end in GitHub
+Actions on 2026-08-28.
+
+The successful integration test covered:
+
+```text
+STAC input
+    ->
+HSI/LST preprocessing
+    ->
+patch extraction
+    ->
+LCZ training
+    ->
+LCZ prediction
+    ->
+STAC output
+```
+
+The run successfully completed:
+
+```text
+CWL validation
+input STAC validation
+EOAP processor interface checks
+adapter image builds
+full CWL execution
+output STAC validation
+required product checks
+```
+
+This validates the repository-level CWL/Docker integration.
+
+Execution on a target EOAP/APEx-compatible deployment environment remains a
+separate platform-level validation step.
+
+## Final Release Step
+
+Before a final versioned release of this pipeline, replace the temporary
+processor references:
+
+```text
+ghcr.io/esa-heatwise/heatwise-patch-extraction:eoap-compliance
+ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance
+```
+
+with the corresponding versioned images published after the upstream EOAP
+changes are merged.
+
+The full GitHub Actions validation should then be executed again before the
+pipeline release is tagged.
