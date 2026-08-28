@@ -1,26 +1,38 @@
-# Job order for heatwise_pipeline.cwl. Fully self-contained: every path
-# points inside this repository (sample data under data/, configs/templates
-# under examples/). Paths are relative to this job file.
+# Job order for heatwise_pipeline.cwl.
+# Fully self-contained: EO preprocessing inputs are staged as a STAC
+# Directory under data/Berlin_prep, while configuration files and labels
+# are provided separately.
+#
+# Paths are relative to this job file.
+
 prep_config:
   class: File
   path: run_all_config_docker.yaml
-prep_catalog:
-  class: File
-  path: prep_catalog_docker.json
+
+prep_input_catalog:
+  class: Directory
+  path: ../data/Berlin_prep
+
 sentinel2:
   class: File
-  path: ../data/Berlin_S2.tif
+  path: ../data/Berlin_prep/Berlin_S2.tif
+
 patch_config_template:
   class: File
   path: patch_config_template.yaml
+
 labels_dir:
   class: Directory
   path: ../data/Berlin_labels
+
 labels_basename: Berlin_labels
+
 train_config:
   class: File
   path: train_config_sample.yaml
+
 predict_config_template:
   class: File
   path: predict_config_template.yaml
+
 experiment_name: HSI-BS
