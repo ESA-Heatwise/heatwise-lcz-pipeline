@@ -13,9 +13,8 @@ doc: |
   and an output STAC catalog to the CWL working directory.
 
 requirements:
-
-DockerRequirement:
-  dockerPull: ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance
+  DockerRequirement:
+    dockerPull: ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance
 
   InlineJavascriptRequirement: {}
 
@@ -26,7 +25,6 @@ arguments:
   - train
 
 inputs:
-
   input_catalog:
     type: Directory
     label: input STAC catalog
@@ -58,7 +56,6 @@ inputs:
       prefix: --output-dir
 
 outputs:
-
   output:
     type: Directory
     doc: |
