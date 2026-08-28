@@ -1,116 +1,198 @@
 cwlVersion: v1.2
-class: Workflow
 
-label: HEATWISE LCZ full pipeline
-doc: >
-  Chains all three HEATWISE EOAP processors end to end:
-  heatwise-hsi-lst-prep -> heatwise-patch-extraction ->
-  heatwise-lcz-classification (train) -> heatwise-lcz-classification
-  (predict). This repository is a self-contained EOAP workflow package: the
-  prep and train steps run vendored copies of the upstream processors' own
-  CWL files (tools/hsi_lst_prep.cwl, tools/lcz_train.cwl -- the processors'
-  code itself lives in their Docker images, referenced via
-  DockerRequirement), and the patch-extraction and predict stages are
-  wrapped by two merged glue+run CommandLineTools
-  (tools/extract_patches_pipeline.cwl, tools/predict_pipeline.cwl) whose
-  glue scripts are baked into thin derived images. The merged tools exist
-  because those processors take a single config.yaml whose *content*
-  references file paths, and a plain CWL step connection can't rewrite that
-  content to point at wherever an upstream step's outputs got staged: the
-  config must be rendered *and* consumed inside the same container
-  invocation (this was originally two separate steps/tools and failed with
-  a "file does not exist" error in an actual cwltool run once the two
-  containers' independent file staging came into play). The final step also
-  writes a STAC catalog + item describing the pipeline's end products.
+$namespaces:
+  s: https://schema.org/
+
+s:softwareVersion: 0.1.1
+s:version: 0.1.1
+
+schemas:
+  - http://schema.org/version/9.0/schemaorg-current-http.rdf
+
+class: Workflow
+id: main
+
+label: HEATWISE LCZ Full Pipeline
+doc: |
+  EOAP-compatible end-to-end HEATWISE LCZ workflow.
+
+  The workflow chains the HEATWISE processors for hyperspectral/LST
+  preprocessing, geographically isolated patch extraction, LCZ model
+  training, and whole-scene LCZ prediction:
+
+      heatwise-hsi-lst-prep
+              ↓
+      heatwise-patch-extraction
+              ↓
+      heatwise-lcz-classification train
+              ↓
+      heatwise-lcz-classification predict
+
+  EO products are exchanged between processing stages through STAC-enabled
+  directories. Internal pipeline adapters are used only where interface
+  adaptation is required, such as adding the original Sentinel-2 product,
+  injecting dynamically staged LCZ labels, or selecting a trained model
+  checkpoint.
+
+  The scientific processing logic remains implemented by the upstream
+  HEATWISE processor images.
+
+requirements: []
 
 inputs:
-  prep_config:
+
+  - id: prep_config
     type: File
-    doc: heatwise-hsi-lst-prep run-all config (examples/run_all_config_docker.yaml; paths inside it are /app/... paths into the prep image)
-  prep_catalog:
-    type: File
-    doc: heatwise-hsi-lst-prep STAC input catalog (examples/prep_catalog_docker.json; item/asset hrefs are /app/... paths into the prep image)
-  sentinel2:
-    type: File
-    doc: Raw Sentinel-2 raster (same scene referenced inside prep_catalog's item; also needed directly by patch-extraction and predict). Sample under data/.
-  patch_config_template:
-    type: File
-    doc: heatwise-patch-extraction config template, missing inputs.*/labels.shp (examples/patch_config_template.yaml)
-  labels_dir:
+    label: preprocessing configuration
+    doc: |
+      Run-level YAML configuration controlling the HSI/LST preprocessing
+      stage.
+
+  - id: prep_input_catalog
     type: Directory
-    doc: Directory containing the labels .shp + siblings (sample under data/Berlin_labels)
-  labels_basename:
-    type: string
-    doc: e.g. "Berlin_labels" (no .shp extension)
-  train_config:
+    label: preprocessing input STAC catalog
+    doc: |
+      Directory containing catalog.json, STAC Items, and the staged EO
+      products required by heatwise-hsi-lst-prep.
+
+  - id: sentinel2
     type: File
-    doc: heatwise-lcz-classification train config (examples/train_config_sample.yaml)
-  predict_config_template:
+    label: Sentinel-2 raster
+    doc: |
+      Original Sentinel-2 raster. The preprocessing stage uses the copy
+      referenced by the input STAC catalog, while this explicit File input
+      is also supplied to the patch-extraction and prediction adapters.
+
+  - id: patch_config_template
     type: File
-    doc: heatwise-lcz-classification predict config template, missing inputs.*/weights (examples/predict_config_template.yaml)
-  experiment_name:
+    label: patch extraction configuration
+    doc: |
+      Patch-extraction YAML configuration containing the scientific
+      processing parameters. The dynamically staged labels.shp path is
+      injected by the pipeline adapter.
+
+  - id: labels_dir
+    type: Directory
+    label: LCZ labels directory
+    doc: |
+      Directory containing the LCZ label shapefile and its associated
+      sidecar files.
+
+  - id: labels_basename
     type: string
+    label: labels basename
+    doc: |
+      Basename of the label shapefile without the .shp extension.
+
+  - id: train_config
+    type: File
+    label: LCZ training configuration
+    doc: |
+      YAML configuration defining LCZ_HMSSNet training parameters and
+      modality experiments.
+
+  - id: predict_config_template
+    type: File
+    label: LCZ prediction configuration
+    doc: |
+      Prediction YAML configuration containing inference and model
+      parameters. EO raster paths and model weights are supplied separately
+      by the pipeline adapter.
+
+  - id: experiment_name
+    type: string
+    label: experiment name
     default: HSI-BS
-    doc: Must match one entry in train_config's experiments[].name
+    doc: |
+      Name of the training experiment whose best_model_<experiment>.pth
+      checkpoint is used for whole-scene prediction.
 
 steps:
+
   prep:
     run: tools/hsi_lst_prep.cwl
+
     in:
       config: prep_config
-      input_catalog: prep_catalog
-      output_dir: {default: prep_output}
-    out: [output_directory]
+      input_catalog: prep_input_catalog
+      output_dir:
+        default: "."
+
+    out:
+      - output
 
   extract_patches:
     run: tools/extract_patches_pipeline.cwl
+
     in:
       template: patch_config_template
-      prep_dir: prep/output_directory
+      prep_dir: prep/output
       sentinel2: sentinel2
       labels_dir: labels_dir
       labels_basename: labels_basename
-    out: [patch_h5]
+      output_h5_name:
+        default: patches.h5
+
+    out:
+      - output
 
   train:
     run: tools/lcz_train.cwl
+
     in:
-      h5_dir: extract_patches/patch_h5
+      input_catalog: extract_patches/output
       config: train_config
-      output_dir: {default: train_output}
-    out: [output_directory]
+      output_dir:
+        default: "."
+
+    out:
+      - output
 
   predict:
     run: tools/predict_pipeline.cwl
+
     in:
       template: predict_config_template
-      prep_dir: prep/output_directory
+      prep_dir: prep/output
       sentinel2: sentinel2
-      train_dir: train/output_directory
+      train_dir: train/output
       experiment_name: experiment_name
-    out: [lcz_map, lcz_map_preview, stac_catalog, output_directory]
+      output_dir_name:
+        default: "."
+
+    out:
+      - output
 
 outputs:
-  prep_output:
+
+  - id: prep_output
     type: Directory
-    outputSource: prep/output_directory
-  patch_h5:
-    type: File
-    outputSource: extract_patches/patch_h5
-  train_output:
+    label: preprocessing output
+    doc: |
+      Complete STAC-enabled output directory produced by the preprocessing
+      stage.
+    outputSource: prep/output
+
+  - id: patch_output
     type: Directory
-    outputSource: train/output_directory
-  lcz_map:
-    type: File
-    outputSource: predict/lcz_map
-  lcz_map_preview:
-    type: File?
-    outputSource: predict/lcz_map_preview
-    doc: Colour preview PNG of the final LCZ map.
-  stac_catalog:
-    type: File
-    outputSource: predict/stac_catalog
-    doc: Root STAC catalog for the final pipeline products (LCZ map + training metrics).
-  predict_output:
+    label: patch extraction output
+    doc: |
+      Complete patch-extraction output directory containing the HDF5 patch
+      dataset and its STAC catalog.
+    outputSource: extract_patches/output
+
+  - id: train_output
     type: Directory
-    outputSource: predict/output_directory
+    label: training output
+    doc: |
+      Complete LCZ training output directory containing model checkpoints,
+      evaluation artifacts, and the training STAC catalog.
+    outputSource: train/output
+
+  - id: output
+    type: Directory
+    label: final LCZ prediction output
+    doc: |
+      Final pipeline output directory containing the LCZ classification
+      GeoTIFF, optional preview PNG, and the prediction STAC catalog.
+    outputSource: predict/output
