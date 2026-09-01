@@ -79,7 +79,7 @@ jobs:
 
       - name: Pull upstream processor images
         run: |
-          docker pull ghcr.io/heatwise-lcz/heatwise-hsi-lst-prep:0.1.1
+          docker pull ghcr.io/esa-heatwise/heatwise-hsi-lst-prep:eoap-compliance
           docker pull ghcr.io/esa-heatwise/heatwise-patch-extraction:eoap-compliance
           docker pull ghcr.io/esa-heatwise/heatwise-lcz-classification:eoap-compliance
 
@@ -87,9 +87,8 @@ jobs:
         run: |
           echo "=== HSI/LST preprocessing ==="
           docker run --rm \
-            --entrypoint python \
-            ghcr.io/heatwise-lcz/heatwise-hsi-lst-prep:0.1.1 \
-            /app/processor.py run-all --help \
+            ghcr.io/esa-heatwise/heatwise-hsi-lst-prep:eoap-compliance \
+            python /app/processor.py run-all --help \
             | grep -- "--input-catalog"
 
           echo "=== Patch extraction ==="
