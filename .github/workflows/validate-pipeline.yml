@@ -125,7 +125,7 @@ jobs:
         run: |
           docker build \
             -f docker/lcz-classification-pipeline.Dockerfile \
-            -t ghcr.io/heatwise-lcz/heatwise-lcz-classification-pipeline:0.1.1 \
+            -t ghcr.io/esa-heatwise/heatwise-lcz-classification-pipeline:eoap-compliance \
             .
 
       - name: Run full CWL pipeline
