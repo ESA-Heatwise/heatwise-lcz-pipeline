@@ -17,7 +17,7 @@ doc: |
 requirements:
 
   DockerRequirement:
-    dockerPull: ghcr.io/heatwise-lcz/heatwise-lcz-classification-pipeline:0.1.1
+    dockerPull: ghcr.io/esa-heatwise/heatwise-lcz-classification-pipeline:eoap-compliance
 
 baseCommand: python
 
