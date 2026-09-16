@@ -17,7 +17,7 @@ on:
 
 permissions:
   contents: read
-  packages: read
+  packages: write
 
 jobs:
   validate-and-test:
@@ -121,12 +121,15 @@ jobs:
             -t ghcr.io/heatwise-lcz/heatwise-patch-extraction-pipeline:0.1.1 \
             .
 
-      - name: Build LCZ prediction pipeline image
+      - name: Build and push LCZ prediction pipeline image
         run: |
           docker build \
             -f docker/lcz-classification-pipeline.Dockerfile \
             -t ghcr.io/esa-heatwise/heatwise-lcz-classification-pipeline:eoap-compliance \
             .
+
+          docker push \
+            ghcr.io/esa-heatwise/heatwise-lcz-classification-pipeline:eoap-compliance
 
       - name: Run full CWL pipeline
         run: |
