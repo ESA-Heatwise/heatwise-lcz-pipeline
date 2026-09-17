@@ -114,12 +114,15 @@ jobs:
             python /app/processor.py predict --help \
             | grep -- "--weights"
 
-      - name: Build patch extraction pipeline image
+      - name: Build and push patch extraction pipeline image
         run: |
           docker build \
             -f docker/patch-extraction-pipeline.Dockerfile \
             -t ghcr.io/heatwise-lcz/heatwise-patch-extraction-pipeline:0.1.1 \
             .
+
+          docker push \
+            ghcr.io/heatwise-lcz/heatwise-patch-extraction-pipeline:0.1.1
 
       - name: Build and push LCZ prediction pipeline image
         run: |
