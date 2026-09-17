@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - eoap-compliance
+      - main
+      
     paths:
       - "heatwise_pipeline.cwl"
       - "tools/**"
@@ -118,11 +120,11 @@ jobs:
         run: |
           docker build \
             -f docker/patch-extraction-pipeline.Dockerfile \
-            -t ghcr.io/heatwise-lcz/heatwise-patch-extraction-pipeline:0.1.1 \
+            -t ghcr.io/esa-heatwise/heatwise-patch-extraction-pipeline:eoap-compliance \
             .
 
           docker push \
-            ghcr.io/heatwise-lcz/heatwise-patch-extraction-pipeline:0.1.1
+            ghcr.io/esa-heatwise/heatwise-patch-extraction-pipeline:eoap-compliance
 
       - name: Build and push LCZ prediction pipeline image
         run: |

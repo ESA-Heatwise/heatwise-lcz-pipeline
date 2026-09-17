@@ -17,7 +17,7 @@ doc: |
 requirements:
 
   DockerRequirement:
-    dockerPull: ghcr.io/heatwise-lcz/heatwise-patch-extraction-pipeline:0.1.1
+    dockerPull: ghcr.io/esa-heatwise/heatwise-patch-extraction-pipeline:eoap-compliance
 
 baseCommand: python
 
