@@ -5,7 +5,7 @@ on:
     branches:
       - eoap-compliance
       - main
-      - fix-patch-image-namespace
+      
     paths:
       - "heatwise_pipeline.cwl"
       - "tools/**"
