@@ -1,0 +1,158 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      prerelease:
+        description: 'Create as pre-release'
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: Version name (without leading v)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  NAMESPACE: esa-heatwise
+
+jobs:
+  # Extract tag from the input
+  # This is a separate job, as the result is reused in multiple places 
+  docker-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.compute.outputs.tag }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+      - name: "Compute the version"
+        id: compute
+        run: |
+          set -euxo pipefail
+          # cut off leading v and trailing newline from version number. I.e. tag "v0.0.2" turns into "0.0.2"
+          RELEASE_VERSION=$(echo "$REF_NAME" | sed 's/^v//' | tr -d '\n')
+
+          # If the version number doesn't come from a tag, but a workflow dispatch, use the supplied version instead.
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            RELEASE_VERSION="$INPUT_VERSION"
+          fi
+          if [[ ! "$RELEASE_VERSION" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]*$ ]]; then
+            echo "error: invalid version '$RELEASE_VERSION'" >&2
+            exit 1
+          fi
+          echo "release version: $RELEASE_VERSION"
+          echo "tag=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+        env: 
+          REF_NAME: ${{ github.ref_name}}
+          INPUT_VERSION: ${{ inputs.version }}
+
+      - name: Check that externally published images exist
+        env:
+          TAG: ${{ steps.compute.outputs.tag }}
+        run: |
+          missing=0
+          for name in heatwise-hsi-lst-prep heatwise-lcz-classification; do
+            ref="${{ env.REGISTRY}}/${{ env.NAMESPACE }}/$name:${{ env.TAG }}"
+            if docker buildx imagetools inspect "$ref" > /dev/null 2>&1; then
+              echo "found $ref"
+            else
+              echo "::error::External image $ref does not exist"
+              missing=1
+            fi
+          done
+          exit $missing
+
+  build-and-publish-images:
+    needs: docker-tag
+    uses: ./.github/workflows/publish-step-images.yml
+    with:
+      tag: ${{ needs.docker-tag.outputs.tag }}
+
+  generate-versioned-cwls:
+    runs-on: ubuntu-latest
+    needs: docker-tag
+    env:
+      ARTIFACT_DIR: dist
+      RELEASE_VERSION: ${{ needs.docker-tag.outputs.tag }}
+      CWL_PATH: tools
+      WORKFLOW_CWL: heatwise_pipeline.cwl
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Info
+        run: |
+          echo "version: $RELEASE_VERSION"
+
+      - name: Replace version in CWL with release version for all tools
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACT_DIR/src/$CWL_PATH"
+          IMAGE_NAMES=(heatwise-patch-extraction-pipeline heatwise-hsi-lst-prep heatwise-lcz-classification heatwise-lcz-classification-pipeline)
+          SED_ARGS=()
+          for name in "${IMAGE_NAMES[@]}"; do
+            image="$REGISTRY/$NAMESPACE/$name"
+            SED_ARGS+=(-e "s#dockerPull: $image:[^ ]*#dockerPull: $image:$RELEASE_VERSION#")
+          done
+          for f in "$CWL_PATH"/*.cwl; do
+            sed "${SED_ARGS[@]}" "$f" > "$ARTIFACT_DIR/src/$f"
+          done
+          sed \
+            -e "s#^s:softwareVersion: .*#s:softwareVersion: $RELEASE_VERSION#" \
+            -e "s#^s:version: .*#s:version: $RELEASE_VERSION#" \
+            "$WORKFLOW_CWL" > "$ARTIFACT_DIR/src/$WORKFLOW_CWL"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Generate packed CWL
+        run: |
+          uvx cwltool --pack "$ARTIFACT_DIR/src/$WORKFLOW_CWL" > "$ARTIFACT_DIR/$WORKFLOW_CWL"
+          rm -rf "$ARTIFACT_DIR/src"
+
+      - name: Upload CWL artifact
+        uses: actions/upload-artifact@v4
+        with: 
+          name: cwl-release
+          path: ${{ env.ARTIFACT_DIR }}/*
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [docker-tag, build-and-publish-images, generate-versioned-cwls]
+    permissions:
+      contents: write
+    env:
+      ARTIFACT_DIR: dist
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v7
+      - name: Download release CWL
+        uses: actions/download-artifact@v4
+        with:
+          name: cwl-release
+          path: ${{ env.ARTIFACT_DIR }}
+          merge-multiple: true
+      - run: |
+          ls -l dist
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/*
+            README.md
+            LICENSE
+          prerelease: ${{ inputs.prerelease || false }}
+          tag_name: v${{ needs.docker-tag.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+
